@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -20,6 +21,7 @@ ALLOWED_DOC_IDS = frozenset(
         "sla_p1_2026",
         "it_helpdesk_faq",
         "hr_leave_policy",
+        "access_control_sop",  # gq_d10_10 — bị quarantine nhầm trong baseline
     }
 )
 
@@ -34,6 +36,12 @@ def _norm_text(s: str) -> str:
 def _stable_chunk_id(doc_id: str, chunk_text: str, seq: int) -> str:
     h = hashlib.sha256(f"{doc_id}|{chunk_text}|{seq}".encode("utf-8")).hexdigest()[:16]
     return f"{doc_id}_{seq}_{h}"
+
+
+def _has_excessive_repetition(text: str, min_phrase_len: int = 20, threshold: int = 3) -> bool:
+    # metric_impact: quarantines bloated rows where the same sentence appears 3+ times
+    parts = [s.strip().lower() for s in re.split(r'[\.。]', text) if len(s.strip()) >= min_phrase_len]
+    return bool(parts) and max(Counter(parts).values()) >= threshold
 
 
 def _normalize_effective_date(raw: str) -> Tuple[str, str]:
@@ -113,6 +121,28 @@ def clean_rows(
 
         if not text:
             quarantine.append({**raw, "reason": "missing_chunk_text"})
+            continue
+
+        # Rule 1 (new) — stale_hr_content_marker
+        # metric_impact: loại chunk hr_leave_policy chứa "10 ngày phép năm" kể cả khi
+        # effective_date >= 2026 (bản HR 2025 được export lại với ngày mới).
+        if doc_id == "hr_leave_policy" and "10 ngày phép năm" in text:
+            quarantine.append({**raw, "reason": "stale_hr_content_marker",
+                                "effective_date_normalized": eff_norm})
+            continue
+
+        # Rule 2 (new) — corrupted_content_marker
+        # metric_impact: loại chunk bắt đầu bằng "!!!" — marker inject lỗi cố ý,
+        # không được đưa vào vector store.
+        if text.startswith("!!!"):
+            quarantine.append({**raw, "reason": "corrupted_content_marker"})
+            continue
+
+        # Rule 3 (new) — excessive_repetition
+        # metric_impact: loại chunk có cùng câu lặp >= 3 lần — bloated duplicate
+        # làm lệch similarity score khi retrieval.
+        if _has_excessive_repetition(text):
+            quarantine.append({**raw, "reason": "excessive_repetition"})
             continue
 
         key = _norm_text(text)

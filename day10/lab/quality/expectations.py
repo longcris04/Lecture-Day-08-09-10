@@ -112,5 +112,31 @@ def run_expectations(cleaned_rows: List[Dict[str, Any]]) -> Tuple[List[Expectati
         )
     )
 
+    # E7: access_control_sop phải có ít nhất 1 chunk — đảm bảo gq_d10_10 có dữ liệu
+    # metric_impact: fail nếu access_control_sop bị quarantine hết (allowlist thiếu / data mất)
+    acsop = [r for r in cleaned_rows if r.get("doc_id") == "access_control_sop"]
+    ok7 = len(acsop) >= 1
+    results.append(
+        ExpectationResult(
+            "access_control_sop_present",
+            ok7,
+            "halt",
+            f"access_control_sop_rows={len(acsop)}",
+        )
+    )
+
+    # E8: không còn chunk bắt đầu bằng "!!!" sau clean
+    # metric_impact: fail nếu corrupted_content_marker rule bị bỏ hoặc data có marker mới
+    bang = [r for r in cleaned_rows if (r.get("chunk_text") or "").startswith("!!!")]
+    ok8 = len(bang) == 0
+    results.append(
+        ExpectationResult(
+            "no_corrupted_content_marker",
+            ok8,
+            "halt",
+            f"bang_prefix_rows={len(bang)}",
+        )
+    )
+
     halt = any(not r.passed and r.severity == "halt" for r in results)
     return results, halt
